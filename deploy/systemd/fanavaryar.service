@@ -1,0 +1,37 @@
+[Unit]
+Description=Fanavaryar — IT management and documentation system
+Documentation=file:/opt/fanavaryar/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=fanavaryar
+Group=fanavaryar
+EnvironmentFile=/etc/fanavaryar/fanavaryar.env
+WorkingDirectory=/opt/fanavaryar
+ExecStart=/opt/fanavaryar/bin/fanavaryar
+Restart=on-failure
+RestartSec=5
+
+# سخت‌گیرانه‌ترین حالت ممکن برای یک سرویس شبکه‌ای معمولی
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+
+# فقط این مسیرها برای نوشتن باز است (فایل‌ها و لاگ داخلی)
+ReadWritePaths=/var/lib/fanavaryar
+
+# لاگ به journald سپرده می‌شود
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=fanavaryar
+
+[Install]
+WantedBy=multi-user.target

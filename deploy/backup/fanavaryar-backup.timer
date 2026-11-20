@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily backup for Fanavaryar at 02:30
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+# اگر سرور در زمان موعد خاموش بود، بعد از روشن شدن اجرا کن
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

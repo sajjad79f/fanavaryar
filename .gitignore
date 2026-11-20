@@ -1,0 +1,16 @@
+# Build output
+/bin/
+/fanavaryar
+*.exe
+
+# Local environment
+.env
+deploy/env/fanavaryar.env
+
+# Frontend
+web/node_modules/
+web/dist/
+
+# IDE
+.idea/
+.vscode/

@@ -1,0 +1,10 @@
+[Unit]
+Description=Fanavaryar backup (database + files)
+After=postgresql.service
+
+[Service]
+Type=oneshot
+User=fanavaryar
+ExecStart=/usr/local/bin/fanavaryar-backup.sh
+# شکست بکاپ باید جدی گرفته شود و در journald دیده شود
+SyslogIdentifier=fanavaryar-backup
