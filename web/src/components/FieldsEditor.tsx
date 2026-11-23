@@ -130,8 +130,8 @@ function FieldEditModal({
       setError('برچسب فیلد الزامی است')
       return
     }
-    if (!/^[a-z][a-z0-9_]*$/.test(f.key)) {
-      setError('کلید باید با حرف انگلیسی کوچک شروع شود و فقط شامل حرف کوچک، رقم و زیرخط باشد')
+    if (!/^[A-Za-z][A-Za-z0-9_-]*$/.test(f.key)) {
+      setError('کلید باید با حرف انگلیسی شروع شود و فقط شامل حرف انگلیسی (بزرگ/کوچک)، رقم، خط تیره یا زیرخط باشد')
       return
     }
     const options = (f.options ?? []).map((s) => s.trim()).filter(Boolean)

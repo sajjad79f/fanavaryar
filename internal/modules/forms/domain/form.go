@@ -26,7 +26,9 @@ var validTypes = map[FieldType]bool{
         FieldDate: true, FieldSelect: true, FieldCheckbox: true,
 }
 
-var keyRe = regexp.MustCompile(`^[a-z][a-z0-9_]*$`)
+// کلید فیلد: حرف/رقم انگلیسی، خط تیره و زیرخط؛ حروف بزرگ و کوچک هر دو مجازند.
+// کلید در JSON داده گزارش استفاده می‌شود و همه نویسه‌های مذکور در JSON معتبرند.
+var keyRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]*$`)
 
 // FieldDef تعریف یک فیلد فرم — هم‌سان با FieldDef فرانت‌اند.
 type FieldDef struct {
@@ -50,7 +52,7 @@ func ValidateFields(fields []FieldDef) error {
         seen := map[string]bool{}
         for _, f := range fields {
                 if !keyRe.MatchString(f.Key) {
-                        return errors.New("کلید فیلد باید با حرف انگلیسی کوچک شروع شود و فقط شامل حرف کوچک، رقم و زیرخط باشد")
+                        return errors.New("کلید فیلد باید با حرف انگلیسی شروع شود و فقط شامل حرف انگلیسی (بزرگ/کوچک)، رقم، خط تیره یا زیرخط باشد")
                 }
                 if seen[f.Key] {
                         return errors.New("کلید فیلدها باید یکتا باشد: " + f.Key)

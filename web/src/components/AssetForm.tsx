@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { api } from '../api/client'
-import type { Asset, LocationRow } from '../api/types'
+import type { Asset, AssetDetail, FieldDef, FormTemplate, FormVersion, LocationRow } from '../api/types'
 import { CATEGORIES, ASSET_STATUSES } from '../api/types'
 import { Modal, Alert } from './ui'
+import { DynamicForm, validateDynamic } from './DynamicForm'
 
 export interface LocationOption {
   id: number
@@ -69,6 +70,11 @@ export function AssetFormModal({
   onClose: () => void
   onSaved: () => void
 }) {
+  const detail = asset as AssetDetail | undefined
+  const hadSpecs = !!asset?.spec_form_version_id
+  // فیلدها و داده مشخصات فقط در پاسخ Detail هست؛ از صفحه پرونده کامل است، از لیست نه
+  const specPreloaded = hadSpecs && Array.isArray(detail?.spec_fields)
+
   const [values, setValues] = useState<AssetFormValues>(
     asset
       ? {
@@ -85,8 +91,50 @@ export function AssetFormModal({
         }
       : emptyValues,
   )
+  // ---------- مشخصات فرمی سخت‌افزاری (اختیاری) ----------
+  const [specForms, setSpecForms] = useState<FormTemplate[]>([])
+  const [specVersionId, setSpecVersionId] = useState(hadSpecs ? String(asset.spec_form_version_id) : '')
+  const [specFields, setSpecFields] = useState<FieldDef[]>([])
+  const [specValues, setSpecValues] = useState<Record<string, unknown>>({})
+  const [specTouched, setSpecTouched] = useState(false)
+  const [clearSpecs, setClearSpecs] = useState(false)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+
+  useEffect(() => {
+    api
+      .get<FormTemplate[]>('/forms?kind=hardware_spec')
+      .then((list) => setSpecForms(list.filter((t) => t.is_active && t.current_version_id)))
+      .catch(() => {})
+  }, [])
+
+  useEffect(() => {
+    // پیش‌بارگذاری مشخصات موجود (فقط از صفحه پرونده که فیلدها و داده را دارد)
+    if (specPreloaded && detail) {
+      setSpecFields(detail.spec_fields)
+      setSpecValues(detail.spec_data ?? {})
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  async function onSpecFormChange(v: string) {
+    if (v === specVersionId) return
+    setSpecTouched(true)
+    setClearSpecs(hadSpecs && v === '')
+    setSpecVersionId(v)
+    if (!v) {
+      setSpecFields([])
+      setSpecValues({})
+      return
+    }
+    try {
+      const ver = await api.get<FormVersion>(`/forms/versions/${v}`)
+      setSpecFields(ver.fields)
+      setSpecValues({})
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'خطا')
+    }
+  }
 
   function set<K extends keyof AssetFormValues>(key: K, v: string) {
     setValues((prev) => ({ ...prev, [key]: v }))
@@ -99,8 +147,7 @@ export function AssetFormModal({
       setError('شناسه و نام تجهیز الزامی است')
       return
     }
-    setBusy(true)
-    const payload = {
+    const payload: Record<string, unknown> = {
       asset_tag: values.asset_tag.trim(),
       name: values.name.trim(),
       category: values.category,
@@ -112,6 +159,19 @@ export function AssetFormModal({
       current_location_id: values.current_location_id ? Number(values.current_location_id) : undefined,
       notes: values.notes.trim() || undefined,
     }
+    // مشخصات فرمی: فقط وقتی کاربر تغییرش داده ارسال می‌شود تا داده موجود بی‌جهت بازنویسی نشود
+    if (clearSpecs) {
+      payload.clear_specs = true
+    } else if (specVersionId && specTouched) {
+      const specErrors = validateDynamic(specFields, specValues)
+      if (specErrors.length > 0) {
+        setError(specErrors.join('؛ '))
+        return
+      }
+      payload.spec_form_version_id = Number(specVersionId)
+      payload.spec_data = specValues
+    }
+    setBusy(true)
     try {
       if (asset) {
         await api.patch(`/assets/${asset.id}`, payload)
@@ -191,6 +251,52 @@ export function AssetFormModal({
         <div className="form-row">
           <label>توضیحات</label>
           <textarea className="input" rows={2} value={values.notes} onChange={(e) => set('notes', e.target.value)} />
+        </div>
+        <div className="form-row">
+          <label>فرم مشخصات سخت‌افزاری</label>
+          {hadSpecs && !specPreloaded ? (
+            <>
+              <input className="input" value="مشخصات فرمی ثبت شده است" disabled />
+              <span className="muted small">ویرایش مشخصات فرمی از صفحه پرونده تجهیز انجام می‌شود</span>
+            </>
+          ) : (
+            <>
+              <select
+                className="input"
+                value={specVersionId}
+                onChange={(e) => onSpecFormChange(e.target.value)}
+                disabled={clearSpecs}
+              >
+                <option value="">— بدون فرم مشخصات —</option>
+                {specForms.map((t) => (
+                  <option key={t.id} value={String(t.current_version_id)}>{t.name}</option>
+                ))}
+                {/* تجهیز ممکن است به نسخه قدیمی‌تری از فرم قفل شده باشد */}
+                {specPreloaded &&
+                  specVersionId !== '' &&
+                  !specForms.some((t) => String(t.current_version_id) === specVersionId) && (
+                    <option value={specVersionId}>
+                      {detail?.spec_template_name} (نسخه ثبت‌شده {detail?.spec_version_number})
+                    </option>
+                  )}
+              </select>
+              <span className="muted small">
+                اختیاری — فیلدهای فرم انتخابی در پرونده تجهیز نمایش داده می‌شوند
+                {hadSpecs && '؛ انتخاب «بدون فرم مشخصات» یعنی حذف مشخصات فعلی'}
+              </span>
+              {clearSpecs && <Alert kind="info">با ذخیره، مشخصات فرمی این تجهیز حذف می‌شود</Alert>}
+              {specFields.length > 0 && (
+                <DynamicForm
+                  fields={specFields}
+                  value={specValues}
+                  onChange={(key, value) => {
+                    setSpecValues((prev) => ({ ...prev, [key]: value }))
+                    setSpecTouched(true)
+                  }}
+                />
+              )}
+            </>
+          )}
         </div>
         <div className="modal-actions">
           <button type="button" className="btn btn-ghost" onClick={onClose}>انصراف</button>

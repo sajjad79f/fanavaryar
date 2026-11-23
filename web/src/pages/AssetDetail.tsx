@@ -5,6 +5,7 @@ import type { AssetDetail } from '../api/types'
 import { CATEGORIES, labelOf } from '../api/types'
 import { PageHeader, Alert, Modal, StatusBadge } from '../components/ui'
 import { AssetFormModal, useLocationOptions } from '../components/AssetForm'
+import { displayValue } from '../components/DynamicForm'
 import { can, useAuth } from '../context/AuthContext'
 import { formatJalali, formatJalaliDateTime } from '../jalali'
 
@@ -56,6 +57,25 @@ export default function AssetDetail() {
         <div className="detail-item"><span className="detail-label">تاریخ ثبت</span>{formatJalaliDateTime(asset.created_at)}</div>
       </div>
       {asset.notes && <div className="card notes">توضیحات: {asset.notes}</div>}
+
+      {asset.spec_form_version_id && (
+        <section className="card">
+          <div className="card-head">
+            <h2>مشخصات سخت‌افزاری</h2>
+            <span className="muted small">
+              فرم «{asset.spec_template_name}» — نسخه {asset.spec_version_number}
+            </span>
+          </div>
+          <div className="detail-grid">
+            {asset.spec_fields.map((f) => (
+              <div className="detail-item" key={f.key}>
+                <span className="detail-label">{f.label}</span>
+                {displayValue(f, asset.spec_data[f.key])}
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       <section className="card">
         <div className="card-head"><h2>تاریخچه جابه‌جایی</h2></div>

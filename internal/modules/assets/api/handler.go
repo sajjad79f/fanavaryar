@@ -51,16 +51,19 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 type assetInput struct {
-        AssetTag          string  `json:"asset_tag"`
-        Name              string  `json:"name"`
-        Category          string  `json:"category"`
-        Status            string  `json:"status"`
-        SerialNumber      *string `json:"serial_number"`
-        Manufacturer      *string `json:"manufacturer"`
-        Model             *string `json:"model"`
-        ResponsiblePerson *string `json:"responsible_person"`
-        CurrentLocationID *int64  `json:"current_location_id"`
-        Notes             *string `json:"notes"`
+        AssetTag          string          `json:"asset_tag"`
+        Name              string          `json:"name"`
+        Category          string          `json:"category"`
+        Status            string          `json:"status"`
+        SerialNumber      *string         `json:"serial_number"`
+        Manufacturer      *string         `json:"manufacturer"`
+        Model             *string         `json:"model"`
+        ResponsiblePerson *string         `json:"responsible_person"`
+        CurrentLocationID *int64          `json:"current_location_id"`
+        Notes             *string         `json:"notes"`
+        SpecFormVersionID *int64          `json:"spec_form_version_id"` // اختیاری: فرم مشخصات سخت‌افزاری
+        SpecData          map[string]any  `json:"spec_data"`
+        ClearSpecs        bool            `json:"clear_specs"` // حذف مشخصات فرمی
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
@@ -80,6 +83,8 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
                 ResponsiblePerson: in.ResponsiblePerson,
                 CurrentLocationID: in.CurrentLocationID,
                 Notes:             in.Notes,
+                SpecFormVersionID: in.SpecFormVersionID,
+                SpecData:          in.SpecData,
         })
         if err != nil {
                 httpx.Error(w, err)
@@ -124,6 +129,9 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
                 ResponsiblePerson: in.ResponsiblePerson,
                 CurrentLocationID: in.CurrentLocationID,
                 Notes:             in.Notes,
+                SpecFormVersionID: in.SpecFormVersionID,
+                SpecData:          in.SpecData,
+                ClearSpecs:        in.ClearSpecs,
         })
         if err != nil {
                 httpx.Error(w, err)

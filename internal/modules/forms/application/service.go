@@ -17,25 +17,39 @@ import (
         "fanavaryar/internal/platform/httpx"
 )
 
+// انواع فرم: گزارش فعالیت یا مشخصات سخت‌افزاری تجهیز.
+const (
+        KindReport       = "report"
+        KindHardwareSpec = "hardware_spec"
+)
+
+// ValidKind اعتبار نوع فرم.
+func ValidKind(k string) bool { return k == KindReport || k == KindHardwareSpec }
+
 // FormTemplate یک قالب فرم.
 type FormTemplate struct {
         ID               int64     `json:"id"`
         Code             string    `json:"code"`
         Name             string    `json:"name"`
         Description      *string   `json:"description"`
+        Kind             string    `json:"kind"` // report | hardware_spec
         IsActive         bool      `json:"is_active"`
+        RequiresApproval bool      `json:"requires_approval"` // false = گزارش‌های این فرم بدون تایید مدیر نهایی می‌شوند
         CurrentVersionID *int64    `json:"current_version_id"`
         CreatedAt        time.Time `json:"created_at"`
 }
 
 // FormVersion یک نسخه تغییرناپذیر از فیلدهای فرم.
+// RequiresApproval از قالب مادر می‌آید تا ماژول گزارش‌ها بدون وابستگی جدید بتواند
+// ثبت خودکار بدون تایید را اعمال کند.
 type FormVersion struct {
-        ID            int64            `json:"id"`
-        TemplateID    int64            `json:"template_id"`
-        VersionNumber int              `json:"version_number"`
-        Fields        []domain.FieldDef `json:"fields"`
-        CreatedByName *string          `json:"created_by_name"`
-        CreatedAt     time.Time        `json:"created_at"`
+        ID               int64             `json:"id"`
+        TemplateID       int64             `json:"template_id"`
+        VersionNumber    int               `json:"version_number"`
+        Fields           []domain.FieldDef `json:"fields"`
+        RequiresApproval bool              `json:"requires_approval"`
+        CreatedByName    *string           `json:"created_by_name"`
+        CreatedAt        time.Time         `json:"created_at"`
 }
 
 // FormDetail قالب + همه نسخه‌ها.
@@ -45,10 +59,11 @@ type FormDetail struct {
 }
 
 type Repository interface {
-        List(ctx context.Context) ([]FormTemplate, error)
+        List(ctx context.Context, kind string) ([]FormTemplate, error)
         GetByID(ctx context.Context, id int64) (FormTemplate, error)
         Create(ctx context.Context, in CreateInput, fields []domain.FieldDef, actorID *int64) (int64, error)
         SetActive(ctx context.Context, id int64, active bool) error
+        SetRequiresApproval(ctx context.Context, id int64, required bool) error
         CreateVersion(ctx context.Context, templateID int64, fields []domain.FieldDef, actorID *int64) (int64, int, error)
         VersionByID(ctx context.Context, id int64) (FormVersion, error)
         ListVersions(ctx context.Context, templateID int64) ([]FormVersion, error)
@@ -68,14 +83,20 @@ func NewService(repo Repository, auditLog AuditLogger) *Service {
 }
 
 type CreateInput struct {
-        Code        string
-        Name        string
-        Description *string
-        Fields      []domain.FieldDef
+        Code             string
+        Name             string
+        Description      *string
+        Kind             string // خالی = گزارش
+        Fields           []domain.FieldDef
+        RequiresApproval *bool // nil = پیش‌فرض true (نیاز به تایید)
 }
 
-func (s *Service) List(ctx context.Context) ([]FormTemplate, error) {
-        items, err := s.repo.List(ctx)
+// List فهرست قالب‌ها؛ kind خالی یعنی همه انواع.
+func (s *Service) List(ctx context.Context, kind string) ([]FormTemplate, error) {
+        if kind != "" && !ValidKind(kind) {
+                return nil, httpx.BadRequest("نوع فرم نامعتبر است؛ مقادیر مجاز: report یا hardware_spec")
+        }
+        items, err := s.repo.List(ctx, kind)
         if err != nil {
                 return nil, httpx.Internal("خطای ذخیره‌سازی", err)
         }
@@ -92,12 +113,20 @@ func (s *Service) Create(ctx context.Context, actor *auth.AuthUser, in CreateInp
                 return 0, httpx.BadRequest("کد و نام فرم الزامی است")
         }
         if len(code) > 60 || !isSlug(code) {
-                return 0, httpx.BadRequest("کد فرم باید انگلیسی، کوتاه و بدون فاصله باشد")
+                return 0, httpx.BadRequest("کد فرم باید با حرف انگلیسی شروع شود و فقط شامل حرف انگلیسی (بزرگ/کوچک)، رقم، خط تیره یا زیرخط باشد")
+        }
+        kind := in.Kind
+        if kind == "" {
+                kind = KindReport
+        }
+        if !ValidKind(kind) {
+                return 0, httpx.BadRequest("نوع فرم نامعتبر است؛ مقادیر مجاز: report یا hardware_spec")
         }
         if err := domain.ValidateFields(in.Fields); err != nil {
                 return 0, httpx.BadRequest(err.Error())
         }
-        id, err := s.repo.Create(ctx, CreateInput{Code: code, Name: name, Description: in.Description, Fields: in.Fields},
+        id, err := s.repo.Create(ctx, CreateInput{Code: code, Name: name, Description: in.Description,
+                Kind: kind, Fields: in.Fields, RequiresApproval: in.RequiresApproval},
                 in.Fields, actorID(actor))
         if err != nil {
                 if errors.Is(err, domain.ErrCodeTaken) {
@@ -105,7 +134,7 @@ func (s *Service) Create(ctx context.Context, actor *auth.AuthUser, in CreateInp
                 }
                 return 0, httpx.Internal("ایجاد فرم ناموفق بود", err)
         }
-        s.auditLog(ctx, actor, "create", id, nil, map[string]any{"code": code, "name": name})
+        s.auditLog(ctx, actor, "create", id, nil, map[string]any{"code": code, "name": name, "kind": kind})
         return id, nil
 }
 
@@ -143,6 +172,22 @@ func (s *Service) SetActive(ctx context.Context, actor *auth.AuthUser, id int64,
                 return httpx.Internal("تغییر وضعیت فرم ناموفق بود", err)
         }
         s.auditLog(ctx, actor, "update", id, nil, map[string]any{"is_active": active})
+        return nil
+}
+
+// SetRequiresApproval تغییر سیاست تایید فرم: با false، گزارش‌های بعدی این فرم
+// در لحظه ثبت به‌صورت خودکار نهایی (approved) می‌شوند؛ گزارش‌های قبلی دست‌نخورده می‌مانند.
+func (s *Service) SetRequiresApproval(ctx context.Context, actor *auth.AuthUser, id int64, required bool) error {
+        if !actor.Has("forms.template_edit") {
+                return httpx.Forbidden("شما مجوز لازم برای این عملیات را ندارید")
+        }
+        if err := s.repo.SetRequiresApproval(ctx, id, required); err != nil {
+                if errors.Is(err, domain.ErrNotFound) {
+                        return httpx.NotFound("فرم یافت نشد")
+                }
+                return httpx.Internal("تغییر سیاست تایید فرم ناموفق بود", err)
+        }
+        s.auditLog(ctx, actor, "update", id, nil, map[string]any{"requires_approval": required})
         return nil
 }
 
@@ -210,6 +255,7 @@ func actorID(u *auth.AuthUser) *int64 {
 
 func trimSpace(s string) string { return strings.TrimSpace(s) }
 
-var slugRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,59}$`)
+// کد فرم: حروف انگلیسی بزرگ/کوچک، رقم، خط تیره و زیرخط؛ باید با حرف شروع شود.
+var slugRe = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{1,59}$`)
 
 func isSlug(s string) bool { return slugRe.MatchString(s) }

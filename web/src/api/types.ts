@@ -41,6 +41,7 @@ export interface Asset {
   current_location_id: number | null
   location_name: string | null
   notes: string | null
+  spec_form_version_id: number | null
   created_at: string
   updated_at: string
 }
@@ -65,6 +66,10 @@ export interface RelatedReport {
 }
 
 export interface AssetDetail extends Asset {
+  spec_version_number: number
+  spec_template_name: string
+  spec_fields: FieldDef[]
+  spec_data: Record<string, unknown>
   movements: Movement[]
   reports: RelatedReport[]
 }
@@ -79,12 +84,16 @@ export interface FieldDef {
   max?: number
 }
 
+export type FormKind = 'report' | 'hardware_spec'
+
 export interface FormTemplate {
   id: number
   code: string
   name: string
   description: string | null
+  kind: FormKind
   is_active: boolean
+  requires_approval: boolean
   current_version_id: number | null
   created_at: string
 }
@@ -94,6 +103,7 @@ export interface FormVersion {
   template_id: number
   version_number: number
   fields: FieldDef[]
+  requires_approval: boolean
   created_by_name: string | null
   created_at: string
 }
@@ -103,7 +113,9 @@ export interface FormDetail {
   code: string
   name: string
   description: string | null
+  kind: FormKind
   is_active: boolean
+  requires_approval: boolean
   current_version_id: number | null
   created_at: string
   versions: FormVersion[]
@@ -244,6 +256,15 @@ export const REPORT_STATUSES: { value: string; label: string }[] = [
   { value: 'approved', label: 'تایید شده' },
   { value: 'rejected', label: 'رد شده' },
 ]
+
+export const FORM_KINDS: { value: FormKind; label: string }[] = [
+  { value: 'report', label: 'گزارش فعالیت' },
+  { value: 'hardware_spec', label: 'مشخصات سخت‌افزاری تجهیز' },
+]
+
+export function formKindLabel(k: FormKind | string | undefined): string {
+  return FORM_KINDS.find((x) => x.value === k)?.label ?? k ?? '—'
+}
 
 export const ROLES: { value: Role; label: string }[] = [
   { value: 'admin', label: 'مدیر سامانه' },

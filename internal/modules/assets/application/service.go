@@ -9,6 +9,7 @@ import (
         "time"
 
         "fanavaryar/internal/modules/assets/domain"
+        formsdomain "fanavaryar/internal/modules/forms/domain"
         "fanavaryar/internal/platform/appkit"
         "fanavaryar/internal/platform/audit"
         "fanavaryar/internal/platform/auth"
@@ -44,6 +45,7 @@ type Asset struct {
         CurrentLocationID *int64    `json:"current_location_id"`
         LocationName      *string   `json:"location_name"`
         Notes             *string   `json:"notes"`
+        SpecFormVersionID *int64    `json:"spec_form_version_id"` // فقط شناسه؛ فیلدها و داده در Detail
         CreatedAt         time.Time `json:"created_at"`
         UpdatedAt         time.Time `json:"updated_at"`
 }
@@ -69,17 +71,44 @@ type RelatedReport struct {
         Status     string `json:"status"`
 }
 
-// AssetDetail پرونده کامل تجهیز: مشخصات + جابه‌جایی‌ها + گزارش‌های مرتبط.
+// SpecFormVersion نسخه فرم مشخصات سخت‌افزاری برای اعتبارسنجی و نمایش.
+type SpecFormVersion struct {
+        ID            int64
+        TemplateID    int64
+        VersionNumber int
+        TemplateName  string
+        Kind          string
+        Fields        []formsdomain.FieldDef
+}
+
+// AssetSpec مشخصات فرمیِ متصل به یک تجهیز؛ nil یعنی تجهیز فرم مشخصات ندارد.
+type AssetSpec struct {
+        SpecFormVersionID int64
+        VersionNumber     int
+        TemplateName      string
+        Fields            []formsdomain.FieldDef
+        Data              map[string]any
+}
+
+// AssetDetail پرونده کامل تجهیز: مشخصات + مشخصات فرمی + جابه‌جایی‌ها + گزارش‌های مرتبط.
+// SpecFormVersionID از Asset تعبیه‌شده می‌آید (در کوئری خوانده می‌شود) و اینجا تکرار نمی‌شود
+// تا با JSON marshall تداخل نام پیش نیاید.
 type AssetDetail struct {
         Asset
-        Movements []Movement      `json:"movements"`
-        Reports   []RelatedReport `json:"reports"`
+        SpecVersionNumber int                    `json:"spec_version_number"`
+        SpecTemplateName  string                 `json:"spec_template_name"`
+        SpecFields        []formsdomain.FieldDef `json:"spec_fields"`
+        SpecData          map[string]any         `json:"spec_data"`
+        Movements         []Movement             `json:"movements"`
+        Reports           []RelatedReport        `json:"reports"`
 }
 
 type Repository interface {
         Create(ctx context.Context, in CreateInput, actorID *int64) (Asset, error)
         Update(ctx context.Context, id int64, in UpdateInput, actorID *int64) (Asset, error)
         GetByID(ctx context.Context, id int64) (Asset, error)
+        GetSpecFormVersion(ctx context.Context, id int64) (SpecFormVersion, error)
+        GetAssetSpec(ctx context.Context, assetID int64) (*AssetSpec, error)
         List(ctx context.Context, f ListFilter) ([]Asset, int, error)
         InsertMove(ctx context.Context, m MoveInput, actorID *int64) error
         ListMoves(ctx context.Context, assetID int64) ([]Movement, error)
@@ -161,6 +190,8 @@ type CreateInput struct {
         ResponsiblePerson *string
         CurrentLocationID *int64
         Notes             *string
+        SpecFormVersionID *int64         // اختیاری: اتصال به نسخه فرم مشخصات سخت‌افزاری
+        SpecData          map[string]any // داده فیلدهای همان نسخه
 }
 
 func (s *Service) Create(ctx context.Context, actor *auth.AuthUser, in CreateInput) (Asset, error) {
@@ -179,6 +210,13 @@ func (s *Service) Create(ctx context.Context, actor *auth.AuthUser, in CreateInp
                 if err := s.checkPhysicalLocation(ctx, *in.CurrentLocationID); err != nil {
                         return Asset{}, err
                 }
+        }
+        if in.SpecFormVersionID != nil {
+                if _, err := s.validateSpec(ctx, *in.SpecFormVersionID, in.SpecData); err != nil {
+                        return Asset{}, err
+                }
+        } else if len(in.SpecData) > 0 {
+                return Asset{}, httpx.BadRequest("برای ثبت مشخصات، ابتدا فرم مشخصات سخت‌افزاری را انتخاب کنید")
         }
 
         out, err := s.repo.Create(ctx, in, actorID(actor))
@@ -205,6 +243,9 @@ type UpdateInput struct {
         ResponsiblePerson *string
         CurrentLocationID *int64
         Notes             *string
+        SpecFormVersionID *int64         // nil = بدون تغییر
+        SpecData          map[string]any // همراه با SpecFormVersionID ارسال می‌شود
+        ClearSpecs        bool           // حذف اتصال فرم مشخصات و داده‌ها
 }
 
 // MoveInput درخواست جابه‌جایی تجهیز.
@@ -244,6 +285,13 @@ func (s *Service) Update(ctx context.Context, actor *auth.AuthUser, id int64, in
                 if err := s.checkPhysicalLocation(ctx, *in.CurrentLocationID); err != nil {
                         return Asset{}, err
                 }
+        }
+        if !in.ClearSpecs && in.SpecFormVersionID != nil {
+                if _, err := s.validateSpec(ctx, *in.SpecFormVersionID, in.SpecData); err != nil {
+                        return Asset{}, err
+                }
+        } else if !in.ClearSpecs && len(in.SpecData) > 0 {
+                return Asset{}, httpx.BadRequest("برای ویرایش مشخصات، فرم مشخصات نیز باید ارسال شود")
         }
 
         after, err := s.repo.Update(ctx, id, in, actorID(actor))
@@ -291,7 +339,27 @@ func (s *Service) Detail(ctx context.Context, id int64) (AssetDetail, error) {
         if reports == nil {
                 reports = []RelatedReport{}
         }
-        return AssetDetail{Asset: a, Movements: moves, Reports: reports}, nil
+        d := AssetDetail{Asset: a, Movements: moves, Reports: reports}
+
+        // مشخصات فرمی سخت‌افزاری (اختیاری)
+        spec, err := s.repo.GetAssetSpec(ctx, id)
+        if err != nil {
+                return AssetDetail{}, httpx.Internal("خطای ذخیره‌سازی", err)
+        }
+        if spec != nil {
+                // SpecFormVersionID از خود a (Asset تعبیه‌شده) پر شده است
+                d.SpecVersionNumber = spec.VersionNumber
+                d.SpecTemplateName = spec.TemplateName
+                d.SpecFields = spec.Fields
+                d.SpecData = spec.Data
+        }
+        if d.SpecFields == nil {
+                d.SpecFields = []formsdomain.FieldDef{}
+        }
+        if d.SpecData == nil {
+                d.SpecData = map[string]any{}
+        }
+        return d, nil
 }
 
 // Move جابه‌جایی تجهیز به اتاق/رک دیگر با ثبت تاریخچه کامل.
@@ -314,6 +382,31 @@ func (s *Service) Move(ctx context.Context, actor *auth.AuthUser, id int64, toLo
                 map[string]any{"to_location_id": toLocationID, "reason": reason}, id)
         return nil
 }
+
+// validateSpec نسخه فرم مشخصات را بررسی می‌کند: موجود، از نوع «مشخصات سخت‌افزاری»،
+// و داده ارسالی هم‌خوان با فیلدهای همان نسخه (قرینه اعتبارسنجی گزارش‌ها).
+func (s *Service) validateSpec(ctx context.Context, versionID int64, data map[string]any) (SpecFormVersion, error) {
+        v, err := s.repo.GetSpecFormVersion(ctx, versionID)
+        if err != nil {
+                if errors.Is(err, domain.ErrSpecFormNotFound) {
+                        return SpecFormVersion{}, httpx.BadRequest("نسخه فرم مشخصات انتخابی معتبر نیست")
+                }
+                return SpecFormVersion{}, httpx.Internal("خواندن فرم مشخصات ناموفق بود", err)
+        }
+        if v.Kind != specFormKindHardwareSpec {
+                return SpecFormVersion{}, httpx.BadRequest("فرم انتخاب‌شده باید از نوع «مشخصات سخت‌افزاری» باشد")
+        }
+        if data == nil {
+                data = map[string]any{}
+        }
+        if err := formsdomain.ValidateFormData(v.Fields, data); err != nil {
+                return SpecFormVersion{}, httpx.BadRequest(err.Error())
+        }
+        return v, nil
+}
+
+// specFormKindHardwareSpec نوع فرم مشخصات در ماژول فرم‌ها (قرارداد v1).
+const specFormKindHardwareSpec = "hardware_spec"
 
 // checkPhysicalLocation مکان مقصد باید «اتاق» یا «رک» باشد و وجود داشته باشد.
 func (s *Service) checkPhysicalLocation(ctx context.Context, locationID int64) error {

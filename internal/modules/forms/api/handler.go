@@ -50,7 +50,7 @@ func (h *Handler) readGuard(next http.HandlerFunc) http.HandlerFunc {
 }
 
 func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
-        items, err := h.svc.List(r.Context())
+        items, err := h.svc.List(r.Context(), r.URL.Query().Get("kind"))
         if err != nil {
                 httpx.Error(w, err)
                 return
@@ -59,10 +59,12 @@ func (h *Handler) list(w http.ResponseWriter, r *http.Request) {
 }
 
 type createInput struct {
-        Code        string             `json:"code"`
-        Name        string             `json:"name"`
-        Description *string            `json:"description"`
-        Fields      []domain.FieldDef  `json:"fields"`
+        Code             string            `json:"code"`
+        Name             string            `json:"name"`
+        Description      *string           `json:"description"`
+        Kind             string            `json:"kind"` // خالی = report
+        Fields           []domain.FieldDef `json:"fields"`
+        RequiresApproval *bool             `json:"requires_approval"` // nil = true
 }
 
 func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
@@ -72,10 +74,12 @@ func (h *Handler) create(w http.ResponseWriter, r *http.Request) {
                 return
         }
         id, err := h.svc.Create(r.Context(), auth.FromContext(r.Context()), application.CreateInput{
-                Code:        in.Code,
-                Name:        in.Name,
-                Description: in.Description,
-                Fields:      in.Fields,
+                Code:             in.Code,
+                Name:             in.Name,
+                Description:      in.Description,
+                Kind:             in.Kind,
+                Fields:           in.Fields,
+                RequiresApproval: in.RequiresApproval,
         })
         if err != nil {
                 httpx.Error(w, err)
@@ -99,13 +103,14 @@ func (h *Handler) detail(w http.ResponseWriter, r *http.Request) {
 }
 
 type updateInput struct {
-        IsActive *bool `json:"is_active"`
+        IsActive         *bool `json:"is_active"`
+        RequiresApproval *bool `json:"requires_approval"`
 }
 
 func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
         u := auth.FromContext(r.Context())
-        if u == nil || !u.HasAny("forms.publish", "forms.disable") {
-                httpx.Error(w, httpx.Forbidden("شما مجوز لازم برای این عملیات را ندارید"))
+        if u == nil {
+                httpx.Error(w, httpx.Unauthorized("ابتدا وارد سامانه شوید"))
                 return
         }
         id, err := pathID(r, "id", "فرم")
@@ -118,13 +123,25 @@ func (h *Handler) update(w http.ResponseWriter, r *http.Request) {
                 httpx.Error(w, err)
                 return
         }
-        if in.IsActive == nil {
-                httpx.Error(w, httpx.BadRequest("مقدار is_active الزامی است"))
+        if in.IsActive == nil && in.RequiresApproval == nil {
+                httpx.Error(w, httpx.BadRequest("مقدار is_active یا requires_approval الزامی است"))
                 return
         }
-        if err := h.svc.SetActive(r.Context(), auth.FromContext(r.Context()), id, *in.IsActive); err != nil {
-                httpx.Error(w, err)
-                return
+        if in.IsActive != nil {
+                if !u.HasAny("forms.publish", "forms.disable") {
+                        httpx.Error(w, httpx.Forbidden("شما مجوز لازم برای این عملیات را ندارید"))
+                        return
+                }
+                if err := h.svc.SetActive(r.Context(), u, id, *in.IsActive); err != nil {
+                        httpx.Error(w, err)
+                        return
+                }
+        }
+        if in.RequiresApproval != nil {
+                if err := h.svc.SetRequiresApproval(r.Context(), u, id, *in.RequiresApproval); err != nil {
+                        httpx.Error(w, err)
+                        return
+                }
         }
         w.WriteHeader(http.StatusNoContent)
 }

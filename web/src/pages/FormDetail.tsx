@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 import { useParams } from 'react-router-dom'
 import { api } from '../api/client'
 import type { FormDetail, FormVersion, FieldDef } from '../api/types'
+import { formKindLabel } from '../api/types'
 import { PageHeader, Modal, Alert, StatusBadge } from '../components/ui'
 import { FieldsEditor } from '../components/FieldsEditor'
 import { DynamicForm } from '../components/DynamicForm'
@@ -47,11 +48,26 @@ export default function FormDetail() {
     }
   }
 
+  async function toggleApproval() {
+    if (!detail) return
+    try {
+      await api.patch(`/forms/${detail.id}`, { requires_approval: !detail.requires_approval })
+      setNotice(
+        detail.requires_approval
+          ? 'نیاز به تایید برای این فرم غیرفعال شد؛ گزارش‌های بعدی مستقیم نهایی می‌شوند'
+          : 'نیاز به تایید برای این فرم فعال شد؛ گزارش‌های بعدی به صف بررسی می‌روند',
+      )
+      load()
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'خطا')
+    }
+  }
+
   return (
     <>
       <PageHeader
         title={detail.name}
-        subtitle={`کد: ${detail.code}`}
+        subtitle={`کد: ${detail.code} — نوع: ${formKindLabel(detail.kind)}`}
         actions={
           <>
             {(hasPerm(user, 'forms.publish') || hasPerm(user, 'forms.disable')) && (
@@ -75,6 +91,20 @@ export default function FormDetail() {
       {notice && <Alert kind="success">{notice}</Alert>}
       {error && <Alert kind="error">{error}</Alert>}
       {detail.description && <p className="muted">{detail.description}</p>}
+
+      <div className="card" style={{ padding: '0.75rem 1rem', display: 'flex', alignItems: 'center', gap: '1rem', flexWrap: 'wrap' }}>
+        <span>
+          <strong>سیاست تایید:</strong>{' '}
+          {detail.requires_approval
+            ? 'گزارش‌های این فرم نیاز به تایید مدیر دارند'
+            : 'گزارش‌های این فرم در لحظه ثبت نهایی می‌شوند (بدون تایید)'}
+        </span>
+        {canEditTemplate && (
+          <button className="btn btn-ghost small" onClick={toggleApproval}>
+            {detail.requires_approval ? 'غیرفعال‌سازی نیاز به تایید' : 'فعال‌سازی نیاز به تایید'}
+          </button>
+        )}
+      </div>
 
       <div className="two-panels">
         <section className="card">

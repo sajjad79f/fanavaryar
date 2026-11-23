@@ -25,8 +25,9 @@ export default function NewReport() {
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
+    // فقط فرم‌های نوع «گزارش فعالیت»؛ فرم‌های مشخصات سخت‌افزاری در پرونده تجهیز استفاده می‌شوند
     api
-      .get<FormTemplate[]>('/forms')
+      .get<FormTemplate[]>('/forms?kind=report')
       .then((list) => {
         const active = list.filter((t) => t.is_active)
         setTemplates(active)
@@ -142,6 +143,12 @@ export default function NewReport() {
             <input className="input" value={user?.full_name ?? ''} disabled />
           </div>
         </div>
+
+        {version && !version.requires_approval && (
+          <Alert kind="success">
+            این فرم نیاز به تایید مدیر ندارد؛ گزارش بلافاصله پس از ثبت نهایی می‌شود.
+          </Alert>
+        )}
 
         <section className="card">
           <div className="card-head"><h2>تجهیزات مرتبط (اختیاری)</h2></div>

@@ -4,6 +4,7 @@ package infrastructure
 
 import (
         "context"
+        "encoding/json"
         "errors"
         "strconv"
 
@@ -13,6 +14,7 @@ import (
 
         "fanavaryar/internal/modules/assets/application"
         "fanavaryar/internal/modules/assets/domain"
+        formsdomain "fanavaryar/internal/modules/forms/domain"
 )
 
 type AssetRepository struct {
@@ -34,7 +36,7 @@ func mapUnique(err error) error {
 const assetCols = `
         a.id, a.asset_tag, a.name, a.category, a.status,
         a.serial_number, a.manufacturer, a.model, a.responsible_person,
-        a.current_location_id, loc.name, a.notes, a.created_at, a.updated_at
+        a.current_location_id, loc.name, a.notes, a.spec_form_version_id, a.created_at, a.updated_at
 `
 
 const assetFrom = ` FROM assets a LEFT JOIN locations loc ON loc.id = a.current_location_id `
@@ -44,7 +46,8 @@ func scanAsset(row pgx.Row) (application.Asset, error) {
         var status string
         err := row.Scan(&a.ID, &a.AssetTag, &a.Name, &a.Category, &status,
                 &a.SerialNumber, &a.Manufacturer, &a.Model, &a.ResponsiblePerson,
-                &a.CurrentLocationID, &a.LocationName, &a.Notes, &a.CreatedAt, &a.UpdatedAt)
+                &a.CurrentLocationID, &a.LocationName, &a.Notes, &a.SpecFormVersionID,
+                &a.CreatedAt, &a.UpdatedAt)
         a.Status = status
         return a, err
 }
@@ -57,12 +60,14 @@ func (r *AssetRepository) Create(ctx context.Context, in application.CreateInput
         var id int64
         if err := r.pool.QueryRow(ctx, `
                 INSERT INTO assets (asset_tag, name, category, status, serial_number,
-                                    manufacturer, model, responsible_person, current_location_id, notes)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+                                    manufacturer, model, responsible_person, current_location_id, notes,
+                                    spec_form_version_id, spec_data)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, COALESCE($12, '{}'::jsonb))
                 RETURNING id`,
                 in.AssetTag, in.Name, in.Category, status,
                 in.SerialNumber, in.Manufacturer, in.Model, in.ResponsiblePerson,
-                in.CurrentLocationID, in.Notes).Scan(&id); err != nil {
+                in.CurrentLocationID, in.Notes,
+                in.SpecFormVersionID, in.SpecData).Scan(&id); err != nil {
                 return application.Asset{}, mapUnique(err)
         }
         _, _ = r.pool.Exec(ctx, `
@@ -104,6 +109,20 @@ func (r *AssetRepository) Update(ctx context.Context, id int64, in application.U
                 add("current_location_id", *in.CurrentLocationID)
         }
         addStr("notes", in.Notes)
+        if in.ClearSpecs {
+                args = append(args, nil)
+                sets = append(sets, "spec_form_version_id = $"+strconv.Itoa(len(args)))
+                args = append(args, []byte("{}"))
+                sets = append(sets, "spec_data = $"+strconv.Itoa(len(args)))
+        } else if in.SpecFormVersionID != nil {
+                add("spec_form_version_id", *in.SpecFormVersionID)
+                if in.SpecData == nil {
+                        args = append(args, []byte("{}"))
+                } else {
+                        args = append(args, in.SpecData)
+                }
+                sets = append(sets, "spec_data = $"+strconv.Itoa(len(args)))
+        }
         sets = append(sets, "updated_at = now()")
 
         tag, err := r.pool.Exec(ctx,
@@ -139,6 +158,75 @@ func (r *AssetRepository) GetByID(ctx context.Context, id int64) (application.As
                 return application.Asset{}, domain.ErrNotFound
         }
         return a, err
+}
+
+// GetSpecFormVersion خواندن نسخه فرم مشخصات (خواندن مستقیم SQL جداول فرم‌ها؛
+// قرینه ListReports که جداول گزارش را می‌خواند) برای اعتبارسنجی سمت سرویس.
+func (r *AssetRepository) GetSpecFormVersion(ctx context.Context, id int64) (application.SpecFormVersion, error) {
+        var v application.SpecFormVersion
+        var kind string
+        var raw []byte
+        err := r.pool.QueryRow(ctx, `
+                SELECT v.id, v.template_id, v.version_number, ft.name, ft.kind, v.fields
+                FROM form_versions v
+                JOIN form_templates ft ON ft.id = v.template_id
+                WHERE v.id = $1`, id).
+                Scan(&v.ID, &v.TemplateID, &v.VersionNumber, &v.TemplateName, &kind, &raw)
+        if errors.Is(err, pgx.ErrNoRows) {
+                return application.SpecFormVersion{}, domain.ErrSpecFormNotFound
+        }
+        if err != nil {
+                return application.SpecFormVersion{}, err
+        }
+        fields, err := formsdomain.ParseFields(raw)
+        if err != nil {
+                return application.SpecFormVersion{}, err
+        }
+        if fields == nil {
+                fields = []formsdomain.FieldDef{}
+        }
+        v.Kind = kind
+        v.Fields = fields
+        return v, nil
+}
+
+// GetAssetSpec مشخصات فرمیِ متصل به تجهیز؛ nil یعنی تجهیز فرم مشخصات ندارد.
+func (r *AssetRepository) GetAssetSpec(ctx context.Context, assetID int64) (*application.AssetSpec, error) {
+        var spec application.AssetSpec
+        var fieldsRaw, dataRaw []byte
+        err := r.pool.QueryRow(ctx, `
+                SELECT COALESCE(a.spec_form_version_id, 0), COALESCE(fv.version_number, 0),
+                       COALESCE(ft.name, ''), fv.fields, COALESCE(a.spec_data, '{}'::jsonb)
+                FROM assets a
+                LEFT JOIN form_versions fv ON fv.id = a.spec_form_version_id
+                LEFT JOIN form_templates ft ON ft.id = fv.template_id
+                WHERE a.id = $1`, assetID).
+                Scan(&spec.SpecFormVersionID, &spec.VersionNumber, &spec.TemplateName, &fieldsRaw, &dataRaw)
+        if errors.Is(err, pgx.ErrNoRows) {
+                return nil, domain.ErrNotFound
+        }
+        if err != nil {
+                return nil, err
+        }
+        if spec.SpecFormVersionID == 0 {
+                return nil, nil
+        }
+        fields, err := formsdomain.ParseFields(fieldsRaw)
+        if err != nil {
+                return nil, err
+        }
+        if fields == nil {
+                fields = []formsdomain.FieldDef{}
+        }
+        spec.Fields = fields
+        data := map[string]any{}
+        if len(dataRaw) > 0 {
+                if err := json.Unmarshal(dataRaw, &data); err != nil {
+                        return nil, err
+                }
+        }
+        spec.Data = data
+        return &spec, nil
 }
 
 // scopeClause برای building/floor/room: زیرشاخه‌های مکان مرجع + تجهیزاتِ بدون مکان.

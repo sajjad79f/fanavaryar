@@ -79,14 +79,19 @@ func (r *ReportRepository) List(ctx context.Context, f application.ListFilter) (
 }
 
 // Create ثبت گزارش: کد یکتا + اتصال به نسخه فرم + اتصال تجهیزها در یک تراکنش.
+// فرم‌های بدون نیاز به تایید ($6=true) مستقیم با وضعیت approved و زمان تایید ثبت می‌شوند.
 func (r *ReportRepository) Create(ctx context.Context, in application.CreateInput, authorID int64) (int64, error) {
+        autoApprove := !in.RequiresApproval
         var id int64
         err := pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
                 if err := tx.QueryRow(ctx, `
-                        INSERT INTO reports (title, status, author_id, form_template_version_id, form_data, report_date)
-                        VALUES ($1, 'pending', $2, $3, $4, $5)
+                        INSERT INTO reports (title, status, author_id, form_template_version_id, form_data, report_date, approved_at)
+                        VALUES ($1,
+                                CASE WHEN $6 THEN 'approved' ELSE 'pending' END,
+                                $2, $3, $4, $5,
+                                CASE WHEN $6 THEN now() ELSE NULL END)
                         RETURNING id, created_at`,
-                        in.Title, authorID, in.FormTemplateVersionID, in.FormData, in.ReportDate,
+                        in.Title, authorID, in.FormTemplateVersionID, in.FormData, in.ReportDate, autoApprove,
                 ).Scan(&id, new(any)); err != nil {
                         return err
                 }

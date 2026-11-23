@@ -113,6 +113,7 @@ type CreateInput struct {
         FormData              map[string]any
         AssetIDs              []int64
         ReportDate            string
+        RequiresApproval      bool // از سیاست فرم می‌آید؛ false = ثبت با وضعیت نهایی approved
 }
 
 func (s *Service) Create(ctx context.Context, actor *auth.AuthUser, in CreateInput) (int64, error) {
@@ -131,11 +132,12 @@ func (s *Service) Create(ctx context.Context, actor *auth.AuthUser, in CreateInp
 
         version, err := s.versions.VersionByID(ctx, in.FormTemplateVersionID)
         if err != nil {
-                var appErr *httpx.AppError
-                if errors.As(err, &appErr) {
+                // نسخه ناموجود/نامعتبر باید ۴۰۰ برگرداند؛ ErrNotFound فرم‌ها خطای دامنه است
+                // و نباید به‌صورت خطای داخلی ۵۰۰ به کاربر درز کند.
+                if errors.Is(err, domain.ErrNotFound) {
                         return 0, httpx.BadRequest("نسخه فرم انتخابی معتبر نیست")
                 }
-                return 0, err
+                return 0, httpx.Internal("خواندن نسخه فرم ناموفق بود", err)
         }
         if in.FormData == nil {
                 in.FormData = map[string]any{}
@@ -143,6 +145,8 @@ func (s *Service) Create(ctx context.Context, actor *auth.AuthUser, in CreateInp
         if err := domain.ValidateFormData(version.Fields, in.FormData); err != nil {
                 return 0, httpx.BadRequest(err.Error())
         }
+        // سیاست تایید از فرم می‌آید: فرم‌های بدون نیاز به تایید مستقیم نهایی می‌شوند.
+        in.RequiresApproval = version.RequiresApproval
         if len(in.AssetIDs) > 0 {
                 n, err := s.assets.CountExisting(ctx, in.AssetIDs)
                 if err != nil {
@@ -158,7 +162,8 @@ func (s *Service) Create(ctx context.Context, actor *auth.AuthUser, in CreateInp
                 return 0, httpx.Internal("ثبت گزارش ناموفق بود", err)
         }
         s.auditLog(ctx, actor, "create", id, nil,
-                map[string]any{"title": in.Title, "version_id": in.FormTemplateVersionID})
+                map[string]any{"title": in.Title, "version_id": in.FormTemplateVersionID,
+                        "requires_approval": in.RequiresApproval})
         return id, nil
 }
 
